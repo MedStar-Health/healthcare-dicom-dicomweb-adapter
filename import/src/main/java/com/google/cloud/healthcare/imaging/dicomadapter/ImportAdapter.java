@@ -144,7 +144,7 @@ public class ImportAdapter {
     // Handle C-MOVE
     CMoveSenderFactory cMoveSenderFactory = new CMoveSenderFactory(cstoreSubAet, dicomWebClient);
     AetDictionary aetDict = new AetDictionary(flags.aetDictionaryInline, flags.aetDictionaryPath);
-    CMoveService cMoveService = new CMoveService(dicomWebClient, aetDict, cMoveSenderFactory);
+    CMoveService cMoveService = new CMoveService(dicomWebClient, aetDict, flags, cMoveSenderFactory);
     serviceRegistry.addDicomService(cMoveService);
 
     // Handle Storage Commitment N-ACTION
