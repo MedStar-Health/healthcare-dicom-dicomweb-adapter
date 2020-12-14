@@ -194,6 +194,18 @@ public class Flags {
           "send to all matching destinations rather than the first matching destination."
   )
   Boolean sendToAllMatchingDestinations = false;
+  
+  @Parameter(
+      names = {"--retrieve_thread_count"},
+      description = "enables parallel processing during cstore operation"
+  )
+  Integer retrieveThreadCount = 1;
+  
+  @Parameter(
+      names = {"--thread_count_on_calculated_fields"},
+      description = "adds parallel processing when calculating No.of Series per Study, No.of Instances per Study, No.of Instances per Series"
+  )
+  Integer threadCountOnCalculatedFields = 1;
 
   public Flags() {
   }
