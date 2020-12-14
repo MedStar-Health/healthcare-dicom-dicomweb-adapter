@@ -21,6 +21,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.CancellationException;
 import org.dcm4che3.data.Attributes;
 import org.dcm4che3.data.Tag;
@@ -126,13 +128,90 @@ public class CFindService extends BasicCFindSCP {
           qidoResults.add(qidoResult);
         }
         HashMap<String, JSONObject> uniqueResults = uniqueResults(qidoResults);
-
+	ExecutorService scheduledCFINDPool = Executors.newFixedThreadPool(cFINDFlags.threadCountOnCalculatedFields);   
         for (JSONObject obj : uniqueResults.values()) {
           if (canceled) {
             throw new CancellationException();
           }
+
           Attributes attrs = AttributesUtil.jsonToAttributes(obj);
-          as.writeDimseRSP(pc, Commands.mkCFindRSP(cmd, Status.Pending), attrs);
+
+          scheduledCFINDPool.execute(new Runnable() {
+            public void run() {
+              try {
+                if (keys.getString(Tag.QueryRetrieveLevel).equals("STUDY") && keys.contains(Tag.NumberOfStudyRelatedInstances)) {
+
+                  List<JSONArray> qidoResults = new ArrayList<>();
+                  Attributes studyKeys = new Attributes();
+                  studyKeys.setString(Tag.QueryRetrieveLevel, VR.CS, "IMAGE");
+                  studyKeys.setString(Tag.StudyInstanceUID, VR.UI, attrs.getString(Tag.StudyInstanceUID));
+
+                  String[] qidoPaths = AttributesUtil.attributesToQidoPathArray(studyKeys);
+
+                  for (String qidoPath : qidoPaths) {
+                    log.info("CFind QidoPath: " + qidoPath);
+                    MonitoringService.addEvent(Event.CFIND_QIDORS_REQUEST);
+                    JSONArray qidoResult = dicomWebClient.qidoRs(qidoPath);
+                    qidoResults.add(qidoResult);
+                    HashMap<String, JSONObject> uniqueResults = uniqueResults(qidoResults);
+                    attrs.setInt(Tag.NumberOfStudyRelatedInstances, VR.IS, uniqueResults.size());
+                  }
+
+                }
+                if (keys.getString(Tag.QueryRetrieveLevel).equals("STUDY") && keys.contains(Tag.NumberOfStudyRelatedSeries)) {
+
+                  List<JSONArray> qidoResults = new ArrayList<>();
+                  Attributes studyKeys = new Attributes();
+                  studyKeys.setString(Tag.QueryRetrieveLevel, VR.CS, "SERIES");
+                  studyKeys.setString(Tag.StudyInstanceUID, VR.UI, attrs.getString(Tag.StudyInstanceUID));
+
+                  String[] qidoPaths = AttributesUtil.attributesToQidoPathArray(studyKeys);
+
+                  for (String qidoPath : qidoPaths) {
+                    log.info("CFind QidoPath: " + qidoPath);
+                    MonitoringService.addEvent(Event.CFIND_QIDORS_REQUEST);
+                    JSONArray qidoResult = dicomWebClient.qidoRs(qidoPath);
+                    qidoResults.add(qidoResult);
+                    HashMap<String, JSONObject> uniqueResults = uniqueResults(qidoResults);
+                    attrs.setInt(Tag.NumberOfStudyRelatedSeries, VR.IS, uniqueResults.size());
+                  }
+
+                }
+                if (keys.getString(Tag.QueryRetrieveLevel).equals("SERIES") && keys.contains(Tag.NumberOfSeriesRelatedInstances)) {
+
+                  List<JSONArray>qidoResults = new ArrayList<>();
+                  Attributes seriesKeys = new Attributes();
+                  seriesKeys.setString(Tag.QueryRetrieveLevel, VR.CS, "IMAGE");
+                  seriesKeys.setString(Tag.StudyInstanceUID, VR.UI, attrs.getString(Tag.StudyInstanceUID));
+                  seriesKeys.setString(Tag.SeriesInstanceUID, VR.UI, attrs.getString(Tag.SeriesInstanceUID));
+
+                  String[] qidoPaths = AttributesUtil.attributesToQidoPathArray(seriesKeys);
+
+                  for (String qidoPath : qidoPaths) {
+                    log.info("CFind QidoPath: " + qidoPath);
+                    MonitoringService.addEvent(Event.CFIND_QIDORS_REQUEST);
+                    JSONArray qidoResult = dicomWebClient.qidoRs(qidoPath);
+                    qidoResults.add(qidoResult);
+                    HashMap<String, JSONObject> uniqueResults = uniqueResults(qidoResults);
+                    attrs.setInt(Tag.NumberOfSeriesRelatedInstances, VR.IS, uniqueResults.size());
+                  }
+
+                }
+                as.writeDimseRSP(pc, Commands.mkCFindRSP(cmd, Status.Pending), attrs);
+              } catch (Exception e) {
+                log.error("Failure processing CFind", e);
+                MonitoringService.addEvent(Event.CFIND_ERROR);
+                sendErrorResponse(Status.ProcessingFailure, e.getMessage());
+              }
+            }
+          });
+        }
+	scheduledCFINDPool.shutdown();
+        while (!scheduledCFINDPool.isTerminated()) {
+          if (canceled) {
+            scheduledCFINDPool.shutdownNow();
+            throw new CancellationException();
+          }
         }
         as.writeDimseRSP(pc, Commands.mkCFindRSP(cmd, Status.Success));
       } catch (CancellationException e) {
