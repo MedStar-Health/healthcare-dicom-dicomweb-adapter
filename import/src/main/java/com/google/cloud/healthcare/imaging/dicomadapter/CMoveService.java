@@ -166,7 +166,7 @@ public class CMoveService extends BasicCMoveSCP {
 
               MonitoringService.addEvent(Event.CMOVE_CSTORE_REQUEST);
 
-              long bytesSent = cstoreSender.cstore(cstoreTarget, studyUid, seriesUid, instanceUid, classUid);
+              long bytesSent = sender.cmove(cstoreTarget, studyUid, seriesUid, instanceUid, classUid);
               
               successfullInstances++;
               remainingInstances--;
