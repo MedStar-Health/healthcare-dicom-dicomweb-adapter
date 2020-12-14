@@ -22,6 +22,9 @@ import com.google.cloud.healthcare.imaging.dicomadapter.monitoring.MonitoringSer
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.CancellationException;
 import org.dcm4che3.data.Attributes;
 import org.dcm4che3.data.Tag;
@@ -46,10 +49,12 @@ public class CMoveService extends BasicCMoveSCP {
   private final IDicomWebClient dicomWebClient;
   private final AetDictionary aets;
   private final ISenderFactory senderFactory;
+  private final Flags cMoveFlags;
 
   CMoveService(
       IDicomWebClient dicomWebClient,
       AetDictionary aets,
+      Flags flags,
       ISenderFactory senderFactory) {
     super(UID.StudyRootQueryRetrieveInformationModelMOVE);
     this.dicomWebClient = dicomWebClient;
@@ -73,6 +78,9 @@ public class CMoveService extends BasicCMoveSCP {
   private class CMoveTask extends DimseTask {
 
     private final Attributes keys;
+    private int successfullInstances;
+    private int remainingInstances;
+    ISender sender = null;
 
     private CMoveTask(Association as, PresentationContext pc,
         Attributes cmd, Attributes keys) {
@@ -84,7 +92,8 @@ public class CMoveService extends BasicCMoveSCP {
     @Override
     public void run() {
       List<String> failedInstanceUids = new ArrayList<>();
-      ISender sender = null;
+      List<Callable<Integer>> taskList = new ArrayList<>();
+
       try {
         if (canceled) {
           throw new CancellationException();
@@ -127,40 +136,56 @@ public class CMoveService extends BasicCMoveSCP {
         }
 
         sender = senderFactory.create();
+        
+        successfullInstances = 0;
+        remainingInstances = qidoResult.length();
+        
+        ExecutorService scheduledCMOVEPool = Executors.newFixedThreadPool(cMoveFlags.retrieveThreadCount);
 
-        int successfullInstances = 0;
-        int remainingInstances = qidoResult.length();
         for (Object instance : qidoResult) {
-          sendPendingResponse(remainingInstances, successfullInstances, failedInstanceUids.size());
 
           if (canceled) {
             throw new CancellationException();
           }
 
           JSONObject instanceJson = (JSONObject) instance;
-          String studyUid = AttributesUtil.getTagValue(instanceJson,
-              TagUtils.toHexString(Tag.StudyInstanceUID));
-          String seriesUid = AttributesUtil.getTagValue(instanceJson,
-              TagUtils.toHexString(Tag.SeriesInstanceUID));
-          String instanceUid = AttributesUtil.getTagValue(instanceJson,
-              TagUtils.toHexString(Tag.SOPInstanceUID));
-          String classUid = AttributesUtil.getTagValue(instanceJson,
-              TagUtils.toHexString(Tag.SOPClassUID));
+          String studyUid = AttributesUtil.getTagValue(instanceJson, TagUtils.toHexString(Tag.StudyInstanceUID));
+          String seriesUid = AttributesUtil.getTagValue(instanceJson, TagUtils.toHexString(Tag.SeriesInstanceUID));
+          String instanceUid = AttributesUtil.getTagValue(instanceJson, TagUtils.toHexString(Tag.SOPInstanceUID));
+          String classUid = AttributesUtil.getTagValue(instanceJson, TagUtils.toHexString(Tag.SOPClassUID));
 
-          try {
-            MonitoringService.addEvent(Event.CMOVE_CSTORE_REQUEST);
-            long bytesSent = sender.cmove(cstoreTarget, studyUid, seriesUid,
-                instanceUid, classUid);
-            successfullInstances++;
-            MonitoringService.addEvent(Event.CMOVE_CSTORE_BYTES, bytesSent);
-          } catch (IDicomWebClient.DicomWebException | IOException e) {
-            MonitoringService.addEvent(Event.CMOVE_CSTORE_ERROR);
-            log.error("Failed CStore within CMove", e);
-            failedInstanceUids.add(instanceUid);
-          }
+          Callable<Integer> callable = () -> {
+            try {
 
-          remainingInstances--;
+              if (canceled) {
+                throw new CancellationException();
+              }
+
+              sendPendingResponse(remainingInstances, successfullInstances, failedInstanceUids.size());
+
+              MonitoringService.addEvent(Event.CMOVE_CSTORE_REQUEST);
+
+              long bytesSent = cstoreSender.cstore(cstoreTarget, studyUid, seriesUid, instanceUid, classUid);
+              
+              successfullInstances++;
+              remainingInstances--;
+
+              MonitoringService.addEvent(Event.CMOVE_CSTORE_BYTES, bytesSent);
+
+            } catch (CancellationException | InterruptedException e) {
+              log.info("Canceled CMove", e);
+              sendErrorResponse(Status.Cancel, failedInstanceUids);
+            } catch (Throwable e) {
+              log.error("Failure processing CMove", e);
+              sendErrorResponse(Status.ProcessingFailure, e.getMessage());
+            }
+            return successfullInstances;
+          };
+          taskList.add(callable);
         }
+        
+        scheduledCMOVEPool.invokeAll(taskList);
+        scheduledCMOVEPool.shutdownNow();
 
         if (failedInstanceUids.isEmpty()) {
           as.tryWriteDimseRSP(pc, Commands.mkCMoveRSP(cmd, Status.Success));
